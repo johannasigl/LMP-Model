@@ -1,623 +1,186 @@
-"""
-Network Visualization
-
-Contains plotting functionality for the DC power flow network
-and LMP visualization using plotting_standards.
-"""
-
 import matplotlib
 matplotlib.use('TkAgg')
-
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Circle
 import plotting_standards as ps
 
-
 class NetworkPlot:
-    """
-    Network visualization with LMP coloring and generator flow paths.
-    
-    Displays:
-    - Nodes with LMP prices and demand
-    - Lines colored by utilization (load)
-    - Generator flows as dashed colored lines showing power split
-    """
-    
     def __init__(self, network_data):
-        """
-        Initialize the network plot.
-        
-        Parameters
-        ----------
-        network_data : NetworkData
-            Network data object.
-        """
         self.network = network_data
         self.fig = None
         self.ax = None
         self.canvas = None
+        self.last_results = None
         ps.setup_plotting_standards()
     
     def embed_in_frame(self, frame):
-        """
-        Embed the plot in a tkinter frame.
-        
-        Parameters
-        ----------
-        frame : ttk.Frame
-            Frame to embed the plot in.
-        """
-        # Increased figure size for clarity
-        self.fig, self.ax = plt.subplots(figsize=(13, 10))
-        self.fig.patch.set_facecolor('white')
-        
+        self.fig, self.ax = plt.subplots(figsize=(10, 8), dpi=100)
+        self.fig.patch.set_facecolor('#ffffff')
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True)
-        
+        self.canvas_widget = self.canvas.get_tk_widget()
+        self.canvas_widget.pack(fill='both', expand=True)
         self._setup_axes()
-        self.canvas.draw()
+        self._redraw_all()
     
     def _setup_axes(self):
-        """Set up axes properties."""
-        self.ax.set_xlim(-2.0, 2.0)
-        self.ax.set_ylim(-2.0, 2.0)
+        pos = list(self.network.node_positions.values())
+        x_coords, y_coords = zip(*pos)
+        padding = 1.0
+        self.ax.set_xlim(min(x_coords) - padding, max(x_coords) + padding)
+        self.ax.set_ylim(min(y_coords) - padding, max(y_coords) + padding)
         self.ax.set_aspect('equal')
         self.ax.axis('off')
-        self.ax.set_title('DC Power Flow - Nodal Pricing', fontsize=14, fontweight='light')
-    
+
     def update(self, results):
-        """
-        Update the plot with new results.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary from DC power flow solver.
-        """
+        self.last_results = results
+        self._redraw_all()
+
+    def _redraw_all(self):
+        if not self.last_results: return
         self.ax.clear()
         self._setup_axes()
         
-        self._draw_generator_flows(results)
-        self._draw_lines(results)
-        self._draw_nodes(results)
-        self._draw_legend(results)
+        # 1. Background Grid (Static Lines)
+        self._draw_static_lines(self.last_results)
         
-        self.canvas.draw()
-    
-    def _draw_nodes(self, results):
-        """
-        Draw nodes with LMP display and demand info.
+        # 2. Moving Generator-Specific Flows
+        self._draw_generator_flows(self.last_results)
         
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        positions = self.network.node_positions
-        lmps = results['lmp']
-        generation = results['generation']
-        
-        for node in self.network.nodes:
-            x, y = positions[node]
-            lmp = lmps[node]
-            gen = generation[node]
-            demand = self.network.consumption[node]
-            gen_cap = self.network.generation[node]['capacity']
-            gen_cost = self.network.generation[node]['cost']
-            gen_color = self.network.generator_colors[node]
-            
-            node_size = 0.22
-            circle = Circle((x, y), node_size, facecolor='white', 
-                           edgecolor='#595959', linewidth=2, zorder=20)
-            self.ax.add_patch(circle)
-            
-            self.ax.text(x, y, node, ha='center', va='center', 
-                        fontsize=14, fontweight='bold', color='#595959', zorder=21)
-            
-            self.ax.text(x, y - node_size - 0.12, f'{lmp:.1f} EUR/MWh',
-                        ha='center', va='top', fontsize=10, fontweight='bold',
-                        color='#4B8246', zorder=21)
-            
-            self.ax.text(x, y - node_size - 0.28, f'D: {demand:.0f} MW',
-                        ha='center', va='top', fontsize=9, color='#595959', zorder=21)
-            
-            if gen_cap > 0:
-                gen_text = f'G: {gen:.0f}/{gen_cap:.0f} MW\n@ {gen_cost:.0f} EUR/MWh'
-                self.ax.text(x, y + node_size + 0.08, gen_text,
-                            ha='center', va='bottom', fontsize=8, color=gen_color,
-                            fontweight='bold', linespacing=1.1, zorder=21)
-                
-                sq_size = 0.06
-                sq = plt.Rectangle((x - sq_size/2, y + node_size + 0.02), 
-                                   sq_size, sq_size, facecolor=gen_color, 
-                                   edgecolor='none', zorder=21)
-                self.ax.add_patch(sq)
-    
-    def _draw_lines(self, results):
-        """
-        Draw lines colored by utilization (load).
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        positions = self.network.node_positions
-        flows = results['flows']
-        capacities = results['capacities']
-        
+        # 3. Nodes and Prices
+        self._draw_nodes(self.last_results)
+        self.canvas.draw_idle()
+
+    def _draw_static_lines(self, results):
+        """Draws a base grey 'pipe' for each transmission line with length and capacity info."""
         for line in self.network.lines:
-            from_node = line['from']
-            to_node = line['to']
-            line_id = f"{from_node}\u2192{to_node}"
-            x1, y1 = positions[from_node]
-            x2, y2 = positions[to_node]
-            flow = flows.get(line_id, 0)
-            capacity = capacities.get(line_id, line['capacity'])
-            length = line.get('length', 100)
-            utilization = abs(flow) / capacity if capacity > 0 else 0
-            if utilization >= 0.99:
-                line_color = '#D26A5E'
-                line_width = 6
-            elif utilization >= 0.8:
-                line_color = '#FFD966'
-                line_width = 5
-            elif utilization >= 0.5:
-                line_color = '#BAD1AC'
-                line_width = 4
-            else:
-                line_color = '#D9D9D9'
-                line_width = 3
-            node_radius = 0.22
-            dx = x2 - x1
-            dy = y2 - y1
-            line_length = np.sqrt(dx**2 + dy**2)
-            if line_length > 0:
-                dx_norm = dx / line_length
-                dy_norm = dy / line_length
-                x1_off = x1 + dx_norm * node_radius
-                y1_off = y1 + dy_norm * node_radius
-                x2_off = x2 - dx_norm * node_radius
-                y2_off = y2 - dy_norm * node_radius
-            else:
-                x1_off, y1_off, x2_off, y2_off = x1, y1, x2, y2
-                dx_norm, dy_norm = 0, 0
-            self.ax.plot([x1_off, x2_off], [y1_off, y2_off], 
-                        color=line_color, linewidth=line_width, 
-                        solid_capstyle='round', zorder=5)
-            # Move label further from line (increase offset)
-            mid_x = (x1_off + x2_off) / 2
-            mid_y = (y1_off + y2_off) / 2
-            perp_x = -dy_norm * 0.35  # increased offset
-            perp_y = dx_norm * 0.35
-            label_text = f'{abs(flow):.0f}/{capacity:.0f} MW\n{length:.0f} km'
-            self.ax.text(mid_x + perp_x, mid_y + perp_y, label_text,
-                        ha='center', va='center', fontsize=8, color='#595959',
-                        bbox=dict(boxstyle='round,pad=0.2', facecolor='white', 
-                                 edgecolor='#CCCCCC', alpha=0.9),
-                        zorder=15)
-    
+            u, v = line['from'], line['to']
+            x1, y1 = self.network.node_positions[u]
+            x2, y2 = self.network.node_positions[v]
+            
+            # Draw the line
+            self.ax.plot([x1, x2], [y1, y2], color='#f0f0f0', linewidth=10, solid_capstyle='round', zorder=1)
+            
+            # Line info text (Length and Capacity)
+            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+            dx, dy = x2 - x1, y2 - y1
+            angle = np.degrees(np.arctan2(dy, dx))
+            if angle > 90: angle -= 180
+            if angle < -90: angle += 180
+            
+            # Offset the text slightly from the line
+            perp_dx, perp_dy = -dy/np.sqrt(dx**2+dy**2), dx/np.sqrt(dx**2+dy**2)
+            offset = 0.15
+            
+            info_text = f"{line['capacity']}MW | {line['length']}km"
+            self.ax.text(mid_x + perp_dx*offset, mid_y + perp_dy*offset, info_text, 
+                         ha='center', va='center', rotation=angle, fontsize=8, color='#7f8c8d',
+                         bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7))
+
     def _draw_generator_flows(self, results):
         """
-        Draw generator flow contributions as dashed colored lines.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
+        Draws generator flows as lines with triangle markers indicating direction.
+        Each color = power from a specific generator node.
         """
-        if not results['feasible']:
-            return
-            
-        positions = self.network.node_positions
-        generator_flows = results.get('generator_flows', {})
+        gen_flows = results.get('generator_flows', {}) # Expected format: {line_id: {gen_node: MW}}
+        all_gens = [n for n in self.network.nodes if self.network.generation[n]['capacity'] > 0]
         
-        # Show all generators, even if only one is active
-        all_generators = [node for node in self.network.nodes if self.network.generation[node]['capacity'] > 0]
-        n_generators = len(all_generators)
-        if n_generators == 0:
-            return
         for line in self.network.lines:
-            from_node = line['from']
-            to_node = line['to']
-            line_id = f"{from_node}\u2192{to_node}"
-            x1, y1 = positions[from_node]
-            x2, y2 = positions[to_node]
-            dx = x2 - x1
-            dy = y2 - y1
-            line_length = np.sqrt(dx**2 + dy**2)
-            if line_length == 0:
-                continue
-            dx_norm = dx / line_length
-            dy_norm = dy / line_length
-            perp_x = -dy_norm
-            perp_y = dx_norm
-            node_radius = 0.22
-            x1_base = x1 + dx_norm * (node_radius + 0.05)
-            y1_base = y1 + dy_norm * (node_radius + 0.05)
-            x2_base = x2 - dx_norm * (node_radius + 0.05)
-            y2_base = y2 - dy_norm * (node_radius + 0.05)
-            gen_line_flows = generator_flows.get(line_id, {})
-            offset_spacing = 0.08
-            total_width = (n_generators - 1) * offset_spacing
-            start_offset = -total_width / 2
-            for i, gen_node in enumerate(all_generators):
-                flow = gen_line_flows.get(gen_node, 0)
-                if abs(flow) < 0.1:
-                    continue
-                gen_color = self.network.generator_colors[gen_node]
-                offset = start_offset + i * offset_spacing
-                x1_off = x1_base + perp_x * offset
-                y1_off = y1_base + perp_y * offset
-                x2_off = x2_base + perp_x * offset
-                y2_off = y2_base + perp_y * offset
-                # Thinner dashed lines for generator flows
-                line_width = 1.2
-                # Animated dashes: use a dash pattern and phase that changes each update
-                # Use a static phase for now (animation in matplotlib+tkinter is nontrivial)
-                dash_pattern = (4, 8)
-                if flow >= 0:
-                    self.ax.plot([x1_off, x2_off], [y1_off, y2_off],
-                                 color=gen_color, linewidth=line_width, linestyle=(0, dash_pattern),
-                                 zorder=3, alpha=0.9)
-                else:
-                    self.ax.plot([x2_off, x1_off], [y2_off, y1_off],
-                                 color=gen_color, linewidth=line_width, linestyle=(0, dash_pattern),
-                                 zorder=3, alpha=0.9)
-    
-    def _draw_legend(self, results):
-        """
-        Draw legends for line utilization and generator colors.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        util_elements = [
-            plt.Line2D([0], [0], color='#D9D9D9', linewidth=4, label='<50%'),
-            plt.Line2D([0], [0], color='#BAD1AC', linewidth=4, label='50-80%'),
-            plt.Line2D([0], [0], color='#FFD966', linewidth=5, label='80-99%'),
-            plt.Line2D([0], [0], color='#D26A5E', linewidth=6, label='100% (congested)'),
-        ]
-        
-        leg1 = self.ax.legend(handles=util_elements, loc='lower right', 
-                             framealpha=0.95, fontsize=8, title='Line Load',
-                             title_fontsize=9)
-        self.ax.add_artist(leg1)
-        
-        gen_elements = []
-        for node in self.network.nodes:
-            gen = results['generation'].get(node, 0)
-            if gen > 0.1:
-                color = self.network.generator_colors[node]
-                gen_elements.append(
-                    plt.Line2D([0], [0], color=color, linewidth=2, 
-                              linestyle='--', label=f'Gen {node}')
-                )
-        
-        if gen_elements:
-            self.ax.legend(handles=gen_elements, loc='lower left',
-                          framealpha=0.95, fontsize=8, title='Generator Flows',
-                          title_fontsize=9)
-        
-        if not results['feasible']:
-            self.ax.text(0, 0, 'INFEASIBLE', ha='center', va='center',
-                        fontsize=24, color='red', fontweight='bold',
-                        bbox=dict(boxstyle='round,pad=0.5', facecolor='white',
-                                 edgecolor='red', linewidth=3),
-                        zorder=100)
-"""
-Network Visualization
-
-Contains plotting functionality for the DC power flow network
-and LMP visualization using plotting_standards.
-"""
-
-import matplotlib
-matplotlib.use('TkAgg')
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.patches import Circle
-import plotting_standards as ps
-
-
-class NetworkPlot:
-    """
-    Network visualization with LMP coloring and generator flow paths.
-    
-    Displays:
-    - Nodes with LMP prices and demand
-    - Lines colored by utilization (load)
-    - Generator flows as dashed colored lines showing power split
-    """
-    
-    def __init__(self, network_data):
-        """
-        Initialize the network plot.
-        
-        Parameters
-        ----------
-        network_data : NetworkData
-            Network data object.
-        """
-        self.network = network_data
-        self.fig = None
-        self.ax = None
-        self.canvas = None
-        
-        ps.setup_plotting_standards()
-    
-    def embed_in_frame(self, frame):
-        """
-        Embed the plot in a tkinter frame.
-        
-        Parameters
-        ----------
-        frame : ttk.Frame
-            Frame to embed the plot in.
-        """
-        # Increased figure size for clarity
-        self.fig, self.ax = plt.subplots(figsize=(13, 10))
-        self.fig.patch.set_facecolor('white')
-        
-        self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True)
-        
-        self._setup_axes()
-        self.canvas.draw()
-    
-    def _setup_axes(self):
-        """Set up axes properties."""
-        self.ax.set_xlim(-2.0, 2.0)
-        self.ax.set_ylim(-2.0, 2.0)
-        self.ax.set_aspect('equal')
-        self.ax.axis('off')
-        self.ax.set_title('DC Power Flow - Nodal Pricing', fontsize=14, fontweight='light')
-    
-    def update(self, results):
-        """
-        Update the plot with new results.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary from DC power flow solver.
-        """
-        self.ax.clear()
-        self._setup_axes()
-        
-        self._draw_generator_flows(results)
-        self._draw_lines(results)
-        self._draw_nodes(results)
-        self._draw_legend(results)
-        
-        self.canvas.draw()
-    
-    def _draw_nodes(self, results):
-        """
-        Draw nodes with LMP display and demand info.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        positions = self.network.node_positions
-        lmps = results['lmp']
-        generation = results['generation']
-        
-        for node in self.network.nodes:
-            x, y = positions[node]
-            lmp = lmps[node]
-            gen = generation[node]
-            demand = self.network.consumption[node]
-            gen_cap = self.network.generation[node]['capacity']
-            gen_cost = self.network.generation[node]['cost']
-            gen_color = self.network.generator_colors[node]
+            u, v = line['from'], line['to']
+            line_id = f"{u}\u2192{v}"
+            x1, y1 = self.network.node_positions[u]
+            x2, y2 = self.network.node_positions[v]
             
-            node_size = 0.22
-            circle = Circle((x, y), node_size, facecolor='white', 
-                           edgecolor='#595959', linewidth=2, zorder=20)
-            self.ax.add_patch(circle)
+            # Line Geometry
+            dx, dy = x2 - x1, y2 - y1
+            length = np.sqrt(dx**2 + dy**2)
+            if length == 0: continue
+            perp_x, perp_y = -dy/length, dx/length
             
-            self.ax.text(x, y, node, ha='center', va='center', 
-                        fontsize=14, fontweight='bold', color='#595959', zorder=21)
+            # Find all generators contributing to this line
+            contributions = []
+            for gen in all_gens:
+                val = gen_flows.get(line_id, {}).get(gen, 0)
+                if abs(val) > 0.1: # Only plot significant flows
+                    contributions.append((gen, val))
             
-            self.ax.text(x, y - node_size - 0.12, f'{lmp:.1f} EUR/MWh',
-                        ha='center', va='top', fontsize=10, fontweight='bold',
-                        color='#4B8246', zorder=21)
-            
-            self.ax.text(x, y - node_size - 0.28, f'D: {demand:.0f} MW',
-                        ha='center', va='top', fontsize=9, color='#595959', zorder=21)
-            
-            if gen_cap > 0:
-                gen_text = f'G: {gen:.0f}/{gen_cap:.0f} MW\n@ {gen_cost:.0f} EUR/MWh'
-                self.ax.text(x, y + node_size + 0.08, gen_text,
-                            ha='center', va='bottom', fontsize=8, color=gen_color,
-                            fontweight='bold', linespacing=1.1, zorder=21)
+            # Draw a separate parallel line for each generator's power contribution
+            n_parallel = len(contributions)
+            spacing = 0.08
+            start_offset = -(n_parallel - 1) * spacing / 2
+
+            for i, (gen_node, mw_val) in enumerate(contributions):
+                color = self.network.generator_colors.get(gen_node, 'black')
+                offset = start_offset + (i * spacing)
                 
-                sq_size = 0.06
-                sq = plt.Rectangle((x - sq_size/2, y + node_size + 0.02), 
-                                   sq_size, sq_size, facecolor=gen_color, 
-                                   edgecolor='none', zorder=21)
-                self.ax.add_patch(sq)
-    
-    def _draw_lines(self, results):
-        """
-        Draw lines colored by utilization (load).
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        positions = self.network.node_positions
-        flows = results['flows']
-        capacities = results['capacities']
-        
-        for line in self.network.lines:
-            from_node = line['from']
-            to_node = line['to']
-            line_id = f"{from_node}\u2192{to_node}"
-            x1, y1 = positions[from_node]
-            x2, y2 = positions[to_node]
-            flow = flows.get(line_id, 0)
-            capacity = capacities.get(line_id, line['capacity'])
-            length = line.get('length', 100)
-            utilization = abs(flow) / capacity if capacity > 0 else 0
-            if utilization >= 0.99:
-                line_color = '#D26A5E'
-                line_width = 6
-            elif utilization >= 0.8:
-                line_color = '#FFD966'
-                line_width = 5
-            elif utilization >= 0.5:
-                line_color = '#BAD1AC'
-                line_width = 4
-            else:
-                line_color = '#D9D9D9'
-                line_width = 3
-            node_radius = 0.22
-            dx = x2 - x1
-            dy = y2 - y1
-            line_length = np.sqrt(dx**2 + dy**2)
-            if line_length > 0:
-                dx_norm = dx / line_length
-                dy_norm = dy / line_length
-                x1_off = x1 + dx_norm * node_radius
-                y1_off = y1 + dy_norm * node_radius
-                x2_off = x2 - dx_norm * node_radius
-                y2_off = y2 - dy_norm * node_radius
-            else:
-                x1_off, y1_off, x2_off, y2_off = x1, y1, x2, y2
-                dx_norm, dy_norm = 0, 0
-            self.ax.plot([x1_off, x2_off], [y1_off, y2_off], 
-                        color=line_color, linewidth=line_width, 
-                        solid_capstyle='round', zorder=5)
-            # Move label further from line (increase offset)
-            mid_x = (x1_off + x2_off) / 2
-            mid_y = (y1_off + y2_off) / 2
-            perp_x = -dy_norm * 0.35  # increased offset
-            perp_y = dx_norm * 0.35
-            label_text = f'{abs(flow):.0f}/{capacity:.0f} MW\n{length:.0f} km'
-            self.ax.text(mid_x + perp_x, mid_y + perp_y, label_text,
-                        ha='center', va='center', fontsize=8, color='#595959',
-                        bbox=dict(boxstyle='round,pad=0.2', facecolor='white', 
-                                 edgecolor='#CCCCCC', alpha=0.9),
-                        zorder=15)
-    
-    def _draw_generator_flows(self, results):
-        """
-        Draw generator flow contributions as dashed colored lines.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        if not results['feasible']:
-            return
-            
-        positions = self.network.node_positions
-        generator_flows = results.get('generator_flows', {})
-        
-        # Show all generators, even if only one is active
-        all_generators = [node for node in self.network.nodes if self.network.generation[node]['capacity'] > 0]
-        n_generators = len(all_generators)
-        if n_generators == 0:
-            return
-        for line in self.network.lines:
-            from_node = line['from']
-            to_node = line['to']
-            line_id = f"{from_node}\u2192{to_node}"
-            x1, y1 = positions[from_node]
-            x2, y2 = positions[to_node]
-            dx = x2 - x1
-            dy = y2 - y1
-            line_length = np.sqrt(dx**2 + dy**2)
-            if line_length == 0:
-                continue
-            dx_norm = dx / line_length
-            dy_norm = dy / line_length
-            perp_x = -dy_norm
-            perp_y = dx_norm
-            node_radius = 0.22
-            x1_base = x1 + dx_norm * (node_radius + 0.05)
-            y1_base = y1 + dy_norm * (node_radius + 0.05)
-            x2_base = x2 - dx_norm * (node_radius + 0.05)
-            y2_base = y2 - dy_norm * (node_radius + 0.05)
-            gen_line_flows = generator_flows.get(line_id, {})
-            offset_spacing = 0.08
-            total_width = (n_generators - 1) * offset_spacing
-            start_offset = -total_width / 2
-            for i, gen_node in enumerate(all_generators):
-                flow = gen_line_flows.get(gen_node, 0)
-                if abs(flow) < 0.1:
-                    continue
-                gen_color = self.network.generator_colors[gen_node]
-                offset = start_offset + i * offset_spacing
-                x1_off = x1_base + perp_x * offset
-                y1_off = y1_base + perp_y * offset
-                x2_off = x2_base + perp_x * offset
-                y2_off = y2_base + perp_y * offset
-                # Thinner dashed lines for generator flows
-                line_width = 1.2
-                # Animated dashes: use a dash pattern and phase that changes each update
-                # Use a static phase for now (animation in matplotlib+tkinter is nontrivial)
-                dash_pattern = (4, 8)
-                if flow >= 0:
-                    self.ax.plot([x1_off, x2_off], [y1_off, y2_off],
-                                 color=gen_color, linewidth=line_width, linestyle=(0, dash_pattern),
-                                 zorder=3, alpha=0.9)
+                # Visual scaling
+                line_width = 1.5 + (abs(mw_val) / 50) * 5 # More MW = thicker line
+                
+                # CRITICAL: Direction
+                # If mw_val is +, power goes from U to V.
+                # If mw_val is -, power goes from V to U.
+                direction = np.sign(mw_val)
+                
+                # Add arrow markers with better visibility
+                if direction > 0:
+                    start_pos = [x1 + perp_x*offset, y1 + perp_y*offset]
+                    end_pos = [x2 + perp_x*offset, y2 + perp_y*offset]
+                    self.ax.plot([start_pos[0], end_pos[0]], [start_pos[1], end_pos[1]],
+                                 color=color, linewidth=line_width, linestyle='-', zorder=10)
+                    
+                    # Add arrows along the line
+                    n_arrows = 3
+                    for a in range(1, n_arrows):
+                        frac = a / n_arrows
+                        arrow_x = x1 + frac * dx + perp_x*offset
+                        arrow_y = y1 + frac * dy + perp_y*offset
+                        self.ax.annotate('', xy=(arrow_x + 0.05*dx/length, arrow_y + 0.05*dy/length), 
+                                         xytext=(arrow_x, arrow_y),
+                                         arrowprops=dict(arrowstyle='->', color=color, lw=line_width, mutation_scale=15),
+                                         zorder=11)
                 else:
-                    self.ax.plot([x2_off, x1_off], [y2_off, y1_off],
-                                 color=gen_color, linewidth=line_width, linestyle=(0, dash_pattern),
-                                 zorder=3, alpha=0.9)
-    
-    def _draw_legend(self, results):
-        """
-        Draw legends for line utilization and generator colors.
-        
-        Parameters
-        ----------
-        results : dict
-            Results dictionary.
-        """
-        util_elements = [
-            plt.Line2D([0], [0], color='#D9D9D9', linewidth=4, label='<50%'),
-            plt.Line2D([0], [0], color='#BAD1AC', linewidth=4, label='50-80%'),
-            plt.Line2D([0], [0], color='#FFD966', linewidth=5, label='80-99%'),
-            plt.Line2D([0], [0], color='#D26A5E', linewidth=6, label='100% (congested)'),
-        ]
-        
-        leg1 = self.ax.legend(handles=util_elements, loc='lower right', 
-                             framealpha=0.95, fontsize=8, title='Line Load',
-                             title_fontsize=9)
-        self.ax.add_artist(leg1)
-        
-        gen_elements = []
+                    start_pos = [x2 + perp_x*offset, y2 + perp_y*offset]
+                    end_pos = [x1 + perp_x*offset, y1 + perp_y*offset]
+                    self.ax.plot([start_pos[0], end_pos[0]], [start_pos[1], end_pos[1]],
+                                 color=color, linewidth=line_width, linestyle='-', zorder=10)
+
+                    # Add arrows along the line (reverse direction)
+                    n_arrows = 3
+                    for a in range(1, n_arrows):
+                        frac = a / n_arrows
+                        arrow_x = x2 - frac * dx + perp_x*offset
+                        arrow_y = y2 - frac * dy + perp_y*offset
+                        self.ax.annotate('', xy=(arrow_x - 0.05*dx/length, arrow_y - 0.05*dy/length), 
+                                         xytext=(arrow_x, arrow_y),
+                                         arrowprops=dict(arrowstyle='->', color=color, lw=line_width, mutation_scale=15),
+                                         zorder=11)
+
+    def _draw_nodes(self, results):
+        """Draws nodes with labels, price tags, and generation legend."""
         for node in self.network.nodes:
-            gen = results['generation'].get(node, 0)
-            if gen > 0.1:
-                color = self.network.generator_colors[node]
-                gen_elements.append(
-                    plt.Line2D([0], [0], color=color, linewidth=2, 
-                              linestyle='--', label=f'Gen {node}')
-                )
-        
-        if gen_elements:
-            self.ax.legend(handles=gen_elements, loc='lower left',
-                          framealpha=0.95, fontsize=8, title='Generator Flows',
-                          title_fontsize=9)
-        
-        if not results['feasible']:
-            self.ax.text(0, 0, 'INFEASIBLE', ha='center', va='center',
-                        fontsize=24, color='red', fontweight='bold',
-                        bbox=dict(boxstyle='round,pad=0.5', facecolor='white',
-                                 edgecolor='red', linewidth=3),
-                        zorder=100)
+            x, y = self.network.node_positions[node]
+            # White node circle
+            self.ax.add_patch(Circle((x, y), 0.25, facecolor='white', edgecolor='#333', lw=2, zorder=20))
+            self.ax.text(x, y, node, ha='center', va='center', fontweight='bold', fontsize=12, zorder=21)
+            
+            # LMP Text (above the node)
+            lmp = results['lmp'][node]
+            self.ax.text(x, y + 0.45, f"LMP: €{lmp:.2f}", ha='center', fontsize=10, fontweight='bold',
+                         bbox=dict(boxstyle='round,pad=0.3', fc='#ecf0f1', ec='#27ae60', lw=1.5, alpha=1.0), zorder=25)
+            
+            # Generation Legend (below the node)
+            gen_val = results['generation'][node]
+            gen_cost = self.network.generation[node]['cost']
+            gen_cap = self.network.generation[node]['capacity']
+            
+            # Individual color for generator
+            c = self.network.generator_colors.get(node, 'black')
+            
+            legend_text = f"GEN: {gen_val:.1f} MW\nCost: {gen_cost:.1f} €/MWh\nMax: {gen_cap:.1f} MW"
+            self.ax.text(x, y - 0.7, legend_text, ha='center', va='top', fontsize=9,
+                         bbox=dict(boxstyle='round,pad=0.3', fc='white', ec=c, lw=2, alpha=0.9), zorder=25)
+            
+            # Small color indicator dot on the node
+            if gen_cap > 0:
+                self.ax.add_patch(Circle((x + 0.18, y + 0.18), 0.05, color=c, zorder=30))

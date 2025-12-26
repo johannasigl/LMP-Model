@@ -55,7 +55,8 @@ class NetworkData:
         """
         Calculate node positions for network visualization.
         
-        Arranges nodes in a circular layout.
+        Arranges nodes in a triangular layout for 3 nodes, 
+        or circular for others.
         """
         import numpy as np
         
@@ -63,7 +64,8 @@ class NetworkData:
         self.node_positions = {}
         
         for i, node in enumerate(self.nodes):
-            angle = 2 * np.pi * i / n - np.pi / 2  # Start from top
+            # For 3 nodes, this creates a standard triangle with node 0 at the top
+            angle = np.pi/2 - 2 * np.pi * i / n 
             x = np.cos(angle)
             y = np.sin(angle)
             self.node_positions[node] = (x, y)
