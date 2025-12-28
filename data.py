@@ -64,10 +64,11 @@ class NetworkData:
         self.node_positions = {}
         
         for i, node in enumerate(self.nodes):
-            # For 3 nodes, this creates a standard triangle with node 0 at the top
+            # Scale the triangle to be much larger (radius 3.0 instead of 1.0)
+            scale = 3.0
             angle = np.pi/2 - 2 * np.pi * i / n 
-            x = np.cos(angle)
-            y = np.sin(angle)
+            x = np.cos(angle) * scale
+            y = np.sin(angle) * scale
             self.node_positions[node] = (x, y)
     
     def update_line_capacity(self, line_idx, capacity):

@@ -7,7 +7,13 @@ import numpy as np
 from cycler import cycler
 from matplotlib.patches import Circle
 import warnings
-from labellines import labelLines
+
+# Optional import for labellines - only needed if using NeonFigure with inline_label=True
+try:
+    from labellines import labelLines
+    HAS_LABELLINES = True
+except ImportError:
+    HAS_LABELLINES = False
 
 # ... (plot_sizes and setup_plotting_standards remain the same) ...
 # Plot sizes (width x height in cm)
@@ -22,8 +28,7 @@ def setup_plotting_standards():
     Configure matplotlib with project-wide plotting standards.
     Call this function at the beginning of your analysis scripts.
     """
-    plt.rcParams.update({'font.sans-serif' : 'Calibri',
-                    'font.weight' : 'light',
+    plt.rcParams.update({
                     'figure.dpi' : 150,
                     'savefig.dpi' : 300,
                     'axes.labelweight' : 'light',
@@ -340,6 +345,10 @@ class NeonFigure:
             place_title(self.fig, self.ax, self.title_text)
         
         if self.inline_label:
+            if not HAS_LABELLINES:
+                warnings.warn("labellines module not installed. Inline labels will be skipped. Install with: pip install matplotlib-label-lines", UserWarning)
+                return
+                
             axes_flat = np.atleast_1d(self.ax).flatten()
             
             # Determine if kwargs are provided per axis or globally
